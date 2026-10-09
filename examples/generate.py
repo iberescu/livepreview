@@ -170,6 +170,29 @@ add("Coffee Die-Cut Mockup - original", [
     {"file": f"{d}/3.png", "label": "CAFE (black)"},
 ])
 
+# ---- Roll of stickers (1055 x 1055 per sticker, 6 instances; opaque squares look best) ----------
+W, H = 1055, 1055
+d = "stickers"
+make(f"{OUT}/{d}/1.png", W, H, "#ffffff", [
+    shape("ellipse", [90, 90, 875, 875], "#e63946"),
+    shape("ellipse", [160, 160, 735, 735], None, stroke={"width": 14, "color": "#ffffff"}),
+    text(527, 600, "STICKER", 190, "#ffffff"),
+])
+make(f"{OUT}/{d}/2.png", W, H, "#1d3557", [
+    shape("star", [130, 130, 795, 795], "#f1c40f", sides=5, starRatio=0.5),
+    text(527, 940, "FIVE STARS", 110, "#ffffff"),
+])
+make(f"{OUT}/{d}/3.png", W, H, "#2a9d8f", [
+    shape("roundedRect", [120, 330, 815, 395], "#ffffff", radii=80),
+    text(527, 600, "SALE", 260, "#2a9d8f"),
+    text(527, 880, "-50%", 150, "#ffffff"),
+])
+add("roll_stikers", [
+    {"file": f"{d}/1.png", "label": "Round badge (opaque)"},
+    {"file": f"{d}/2.png", "label": "Star (opaque)"},
+    {"file": f"{d}/3.png", "label": "SALE (opaque)"},
+])
+
 with open(f"{OUT}/manifest.json", "w", encoding="utf-8") as f:
     json.dump(manifest, f, indent=1, ensure_ascii=False)
 print("wrote manifest.json with", sum(len(v) for v in manifest.values()), "examples")

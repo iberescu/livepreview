@@ -298,7 +298,32 @@ fn write_cache(key: &str, c: &WarpCache) {
     }
 }
 
-/// Replaces each preset warp by the mesh recovered from Photoshop's render of the layer.
+/// Photoshop's transform quad (`Trnf`) of a warped placed layer is where the bounding box of
+/// the warp's control net lands, not where the original box would: verified on seven
+/// custom-warped layers (0.2–0.9/255 against Photoshop's pixels, versus 16–190 when the box is
+/// mapped). PhotoCraft maps the box, so the control net is normalised onto the box here.
+/// Returns false when the mesh already spans the box (nothing to do) or isn't a single patch.
+fn normalise_custom_mesh(w: &mut Warp) -> bool {
+    let [b0, b1, b2, b3] = w.bounds;
+    let (bw, bh) = (b2 - b0, b3 - b1);
+    let Some(m) = &mut w.mesh else { return false };
+    if m.us.len() != 2 || m.vs.len() != 2 || !(bw > 0.0 && bh > 0.0) {
+        return false;
+    }
+    let e = m.points.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])]);
+    let (ew, eh) = (e[2] - e[0], e[3] - e[1]);
+    if !(ew > 0.0 && eh > 0.0) || e.iter().zip(&w.bounds).all(|(x, y)| (x - y).abs() < 1e-6) {
+        return false;
+    }
+    for p in &mut m.points {
+        *p = [b0 + (p[0] - e[0]) * bw / ew, b1 + (p[1] - e[1]) * bh / eh];
+    }
+    true
+}
+
+/// Prepares each smart object's warp: a custom mesh is normalised onto its box (see
+/// [`normalise_custom_mesh`]), a preset is replaced by the mesh recovered from Photoshop's
+/// render of the layer.
 fn fit_warps(id: &str, doc: &mut Document, smart_objects: &mut [SmartInfo], file: &FileKey) {
     let canvas = doc.bounds();
     let fmt = doc.pixel_format();
@@ -308,7 +333,41 @@ fn fit_warps(id: &str, doc: &mut Document, smart_objects: &mut [SmartInfo], file
         let Some(w) = sm.warp.clone() else { continue };
         let style = format!("{:?}", w.style);
         if w.style == WarpStyle::Custom {
-            s.warp = Some(WarpInfo { style, rendering: "Photoshop's own mesh, stored in the PSD".into(), fit: None });
+            let mut fixed = w.clone();
+            if !normalise_custom_mesh(&mut fixed) {
+                s.warp = Some(WarpInfo { style, rendering: "Photoshop's own mesh, stored in the PSD".into(), fit: None });
+                continue;
+            }
+            // Keep whichever reading matches Photoshop's render, when the PSD holds one.
+            let t = Instant::now();
+            let verdict = sm
+                .cache
+                .as_ref()
+                .filter(|c| !c.content_bounds().is_empty())
+                .and_then(|ps| {
+                    let (file_name, bytes) = smart_cmds::source_bytes(&doc.metadata, &sm.source)?;
+                    let src = smart_cmds::source_image(&file_name, &bytes, fmt).ok()?;
+                    let before = meshfit::alpha_diff(&crate::render::place(sm, &src.surface, s.width, s.height), ps, canvas);
+                    let mut fixed_sm = sm.clone();
+                    fixed_sm.warp = Some(fixed.clone());
+                    let after = meshfit::alpha_diff(&crate::render::place(&fixed_sm, &src.surface, s.width, s.height), ps, canvas);
+                    Some(FitInfo { before, after, ms: t.elapsed().as_millis() as u64, prior: "control-net extent".into() })
+                });
+            let apply = verdict.as_ref().is_none_or(|v| v.after <= v.before);
+            if let Some(v) = &verdict {
+                tracing::info!(template = id, layer = %s.name, before = v.before, after = v.after, applied = apply, "custom warp mesh normalised to its extent");
+            }
+            if apply
+                && let Some(l) = doc.layer_at_mut(&s.path)
+                && let LayerContent::Smart(sm) = &mut l.content
+            {
+                sm.warp = Some(fixed);
+            }
+            s.warp = Some(WarpInfo {
+                style,
+                rendering: if apply { "Photoshop's own mesh, stored in the PSD; its control net mapped onto the transform box".into() } else { "Photoshop's own mesh, stored in the PSD".into() },
+                fit: verdict,
+            });
             continue;
         }
         let sm = sm.clone();

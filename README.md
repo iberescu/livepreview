@@ -133,6 +133,10 @@ templates (mean absolute difference, 0–255):
 | | neck label (Displace, Color Overlay) | shape 4.1 | |
 | hoodie (4500×3045) | print (Displace, perspective) | 3.0 (45 without Displace) | 0.00 |
 | bottle (3000×2100, 16-bit) | label (Arc Lower warp, Color Overlay) | 3.1 (111 with PhotoCraft's own preset formula) | 0.00 |
+| bag (2500×1668) | design | 0.7 | 0.01 |
+| canvas (4500×3000) | artwork | 1.5 | 0.63 |
+| coffee die-cut (1536×1024) | artwork → stencil hole + cocoa (3 instances) | 4.3–5.5 (Ripple skipped) | 0.70 |
+| roll of stickers (4056×3001) | 6 sticker instances + inside, all with custom warps | 0.2–0.9 shape (16–190 as PhotoCraft reads them) | 1.14 |
 
 What makes those numbers:
 
@@ -141,6 +145,12 @@ What makes those numbers:
 - **Displace** (Photoshop's filter, which PhotoCraft doesn't implement) is implemented here from
   the map Photoshop embeds in the PSD (`src/displace.rs`); its direction, area and sampling were
   chosen by comparing with Photoshop's render.
+- **Custom warps** (Edit › Transform › Warp meshes stored in the PSD): Photoshop's transform
+  quad for a warped layer is where the bounding box of the warp's control net lands, not where
+  the original box would. PhotoCraft maps the original box, which bends stickers too little or
+  folds them wrongly; the service maps the control net's extent onto the box instead, verified
+  against Photoshop's pixels at load (`warp.fit` shows before/after; the fix is only kept when
+  it matches better).
 - **Preset warps** (Arc, Arc Lower, Flag, …): the PSD stores only the preset's name and bend,
   and Photoshop's formulas are undocumented, so the service recovers the actual Bezier mesh by
   fitting PhotoCraft's render of the original contents to Photoshop's pixels (`src/meshfit.rs`),

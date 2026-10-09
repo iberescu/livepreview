@@ -82,5 +82,19 @@
    "file": "diecut/3.png",
    "label": "CAFE (black)"
   }
+ ],
+ "roll_stikers": [
+  {
+   "file": "stickers/1.png",
+   "label": "Round badge (opaque)"
+  },
+  {
+   "file": "stickers/2.png",
+   "label": "Star (opaque)"
+  },
+  {
+   "file": "stickers/3.png",
+   "label": "SALE (opaque)"
+  }
  ]
 }

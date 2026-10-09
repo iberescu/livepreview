@@ -76,6 +76,8 @@ function defaultSmartObject(list) {
     if (!s.visible) v -= 3;
     // An opacity-0 layer is only worth replacing through its linked instances.
     if (s.opacity === 0 && !s.instances) v -= 20;
+    // Many instances (a roll of stickers, a pattern) mark the artwork placeholder.
+    v += Math.min(s.instances || 0, 5) * 3;
     return v;
   };
   return [...list].sort((a, b) => score(b) - score(a))[0];

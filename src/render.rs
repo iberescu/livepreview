@@ -502,9 +502,16 @@ pub fn render(tpl: &Template, target: &Target, upload: &[u8], upload_name: &str,
 
     // Each target's source resolution: the fraction of the contents size its placement needs
     // (a 35-megapixel placeholder placed at 7% is fitted at 14%). One fitted surface per size.
-    let mut plan: Vec<(&SmartInfo, f64, (u32, u32))> = Vec::new();
+    // Instances share one fitted surface, at the largest resolution any of them needs.
+    let mut need: HashMap<(u32, u32), f64> = HashMap::new();
     for s in &targets {
         let k = crate::scale::source_scale(smart_of(&s.path)?);
+        let e = need.entry((s.width, s.height)).or_insert(0.0);
+        *e = e.max(k);
+    }
+    let mut plan: Vec<(&SmartInfo, f64, (u32, u32))> = Vec::new();
+    for s in &targets {
+        let k = need[&(s.width, s.height)];
         let size = (((f64::from(s.width) * k).round() as u32).max(1), ((f64::from(s.height) * k).round() as u32).max(1));
         plan.push((s, k, size));
     }

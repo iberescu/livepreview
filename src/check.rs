@@ -189,6 +189,96 @@ pub fn run(args: &[String]) -> i32 {
         let extra = |i: usize| s.displace.iter().find(|(j, _)| *j == i).map(|(_, d)| &**d);
         let ours = crate::filters::apply_smart_filters(&placed, sm, canvas, &extra, displace::DEFAULT);
         println!("  layer pixels vs Photoshop's: {}", stats(&ours, ps, region).line());
+        // CHECK_MESH=1: how Photoshop's stored 4x4 custom mesh should be read. Each reading is
+        // rendered and scored against Photoshop's pixels (alpha only, so the point ordering is
+        // invisible for opaque contents; the direction and the control/surface question aren't).
+        if std::env::var("CHECK_MESH").is_ok()
+            && let Some(w) = &sm.warp
+            && let Some(m) = &w.mesh
+            && m.us.len() == 2
+            && m.vs.len() == 2
+        {
+            use photocraft_geom::warp::{BezierMesh, Warp};
+            let b = w.bounds;
+            let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
+            let score = |mesh: BezierMesh| {
+                let mut sm2 = sm.clone();
+                sm2.warp = Some(Warp::custom(mesh, b));
+                let r = crate::render::place(&sm2, &src.surface, s.width, s.height);
+                meshfit::alpha_diff(&r, ps, canvas)
+            };
+            // Points taken as the surface at (i/3, j/3) instead of as control points.
+            let through = |pts: &BezierMesh| {
+                BezierMesh::fit(
+                    &|u, v| {
+                        let (i, j) = ((u * 3.0).round() as usize, (v * 3.0).round() as usize);
+                        pts.point(i.min(3), j.min(3))
+                    },
+                    vec![0.0, 1.0],
+                    vec![0.0, 1.0],
+                )
+            };
+            let ident = BezierMesh::identity(b, 1, 1);
+            let mut reflected = m.clone();
+            for (p, i) in reflected.points.iter_mut().zip(&ident.points) {
+                *p = [2.0 * i[0] - p[0], 2.0 * i[1] - p[1]];
+            }
+            // The numerical inverse of the mesh (where a destination grid point samples from).
+            let inverse = BezierMesh::fit(
+                &|u, v| {
+                    let (s2, t2) = m.param_at([b[0] + u * bw, b[1] + v * bh]);
+                    [b[0] + s2 * bw, b[1] + t2 * bh]
+                },
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+            );
+            println!("    mesh as control points: {:.2}/255; as surface points: {:.2}/255", score(m.clone()), score(through(m)));
+            // The transform may describe where the warped shape's bounding box goes, not the
+            // original box: normalise the mesh's extent onto the contents box first.
+            let bbox = |pts: &[[f64; 2]]| {
+                pts.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])])
+            };
+            let normalise = |pts: &BezierMesh, e: [f64; 4]| {
+                let mut n = pts.clone();
+                for p in &mut n.points {
+                    *p = [b[0] + (p[0] - e[0]) * bw / (e[2] - e[0]), b[1] + (p[1] - e[1]) * bh / (e[3] - e[1])];
+                }
+                n
+            };
+            let control_extent = bbox(&m.points);
+            let mut samples = Vec::new();
+            for j in 0..=32 {
+                for i in 0..=32 {
+                    samples.push(m.eval(i as f64 / 32.0, j as f64 / 32.0));
+                }
+            }
+            let surface_extent = bbox(&samples);
+            println!(
+                "    control-net extent {:?} / box {:?}; surface extent {:?}",
+                control_extent.map(|v| v.round()),
+                b.map(|v| v.round()),
+                surface_extent.map(|v| v.round())
+            );
+            println!(
+                "    normalised to the control-net extent: {:.2}/255; to the surface extent: {:.2}/255",
+                score(normalise(m, control_extent)),
+                score(normalise(m, surface_extent))
+            );
+            let t = through(m);
+            let mut ts = Vec::new();
+            for j in 0..=32 {
+                for i in 0..=32 {
+                    ts.push(t.eval(i as f64 / 32.0, j as f64 / 32.0));
+                }
+            }
+            println!("    as surface points, normalised to its surface extent: {:.2}/255", score(normalise(&t, bbox(&ts))));
+            println!("    reflected (first-order inverse) as control points: {:.2}/255; as surface points: {:.2}/255", score(reflected.clone()), score(through(&reflected)));
+            println!("    numerical inverse mesh: {:.2}/255", score(inverse));
+            let mut sm2 = sm.clone();
+            sm2.warp = None;
+            let r = crate::render::place(&sm2, &src.surface, s.width, s.height);
+            println!("    no warp at all: {:.2}/255", meshfit::alpha_diff(&r, ps, canvas));
+        }
         if !s.displace.is_empty() {
             let none = |_: usize| None;
             let without = crate::filters::apply_smart_filters(&placed, sm, canvas, &none, displace::DEFAULT);
