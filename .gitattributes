@@ -1,0 +1,6 @@
+# Normalise line endings in the repo; keep images and PSDs untouched.
+* text=auto
+*.png binary
+*.jpg binary
+*.psd binary
+*.psb binary
