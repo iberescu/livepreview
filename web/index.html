@@ -73,6 +73,7 @@ function defaultSmartObject(list) {
     const n = s.name.toLowerCase(); let v = 0;
     for (const [word, w] of [['design', 10], ['artwork', 10], ['replace', 8], ['place', 6], ['logo', 4], ['print', 4]]) if (n.includes(word)) v += w;
     if (n.includes('copy')) v -= 5;
+    if (n.includes('(auto)')) v -= 1;   // Photoshop's auto-named instances: prefer the named one
     if (!s.visible) v -= 3;
     // An opacity-0 layer is only worth replacing through its linked instances.
     if (s.opacity === 0 && !s.instances) v -= 20;
@@ -135,7 +136,7 @@ async function render(card, tpl, imageBlob, imageName) {
 }
 
 async function exampleBlob(file) {
-  const r = await fetch(API + '/examples/' + file);
+  const r = await fetch(API + '/examples/' + file, { cache: 'no-store' });
   if (!r.ok) throw new Error(`example ${file}: ${r.status}`);
   return r.blob();
 }
@@ -170,7 +171,7 @@ function buildCard(tpl, examples) {
   for (const e of examples) {
     const fig = document.createElement('figure');
     fig.innerHTML = `<img alt=""><figcaption><small></small></figcaption><button>Render</button>`;
-    $('img', fig).src = API + '/examples/' + e.file;
+    $('img', fig).src = API + '/examples/' + e.file + '?t=' + Date.now();
     $('figcaption', fig).firstChild.textContent = '';
     $('figcaption', fig).insertAdjacentText('afterbegin', e.label);
     $('small', fig).textContent = e.file;
@@ -195,9 +196,10 @@ function buildCard(tpl, examples) {
 async function main() {
   status('loading templates…');
   try {
+    // Always fresh: templates and examples change while the service runs.
     const [templates, manifest] = await Promise.all([
-      fetch(API + '/templates').then(r => r.json()),
-      fetch(API + '/examples/manifest.json').then(r => r.ok ? r.json() : {}),
+      fetch(API + '/templates', { cache: 'no-store' }).then(r => r.json()),
+      fetch(API + '/examples/manifest.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}),
     ]);
     const root = $('#templates');
     for (const tpl of templates) {
