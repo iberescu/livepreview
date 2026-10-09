@@ -1,0 +1,36 @@
+[package]
+name = "mockup-server"
+description = "HTTP service: replace a smart object's contents in a stored PSD and return a web image"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Built as a member of the PhotoCraft workspace (the Dockerfile copies this folder to
+# photocraft/apps/mockup-server), so the engine crates resolve with PhotoCraft's own lockfile.
+[dependencies]
+photocraft-doc = { workspace = true }
+photocraft-io = { workspace = true }
+photocraft-psd = { workspace = true }
+photocraft-compose = { workspace = true }
+photocraft-engine = { workspace = true }
+photocraft-raster = { workspace = true }
+photocraft-color = { workspace = true }
+photocraft-geom = { workspace = true }
+photocraft-algo = { workspace = true }
+photocraft-cms = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
+
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["trace", "fs", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+image = { version = "0.25", default-features = false, features = ["png", "rayon"] }
+fast_image_resize = "5"
+jpeg-encoder = "0.6"
+webp = "0.3"

@@ -1,0 +1,86 @@
+{
+ "T-shirt_landscape_white": [
+  {
+   "file": "tshirt/1.png",
+   "label": "Sunset print (opaque)"
+  },
+  {
+   "file": "tshirt/2.png",
+   "label": "Polka dots (opaque)"
+  },
+  {
+   "file": "tshirt/3.png",
+   "label": "Minimal logo (opaque)"
+  }
+ ],
+ "Bottle_landscape_red": [
+  {
+   "file": "bottle/1.png",
+   "label": "AQUA wordmark"
+  },
+  {
+   "file": "bottle/2.png",
+   "label": "Stripes"
+  },
+  {
+   "file": "bottle/3.png",
+   "label": "Star + PURE"
+  }
+ ],
+ "hoodie_landscape": [
+  {
+   "file": "hoodie/1.png",
+   "label": "White wordmark"
+  },
+  {
+   "file": "hoodie/2.png",
+   "label": "Colour shapes"
+  },
+  {
+   "file": "hoodie/3.png",
+   "label": "Gradient bar"
+  }
+ ],
+ "Bags_square - original": [
+  {
+   "file": "bag/1.png",
+   "label": "Black logo"
+  },
+  {
+   "file": "bag/2.png",
+   "label": "Colour circles"
+  },
+  {
+   "file": "bag/3.png",
+   "label": "Monogram"
+  }
+ ],
+ "canvas_square - original": [
+  {
+   "file": "canvas/1.png",
+   "label": "Sunset (opaque)"
+  },
+  {
+   "file": "canvas/2.png",
+   "label": "Geometric (opaque)"
+  },
+  {
+   "file": "canvas/3.png",
+   "label": "Poster (opaque)"
+  }
+ ],
+ "Coffee Die-Cut Mockup - original": [
+  {
+   "file": "diecut/1.png",
+   "label": "Star (black)"
+  },
+  {
+   "file": "diecut/2.png",
+   "label": "Heart (black)"
+  },
+  {
+   "file": "diecut/3.png",
+   "label": "CAFE (black)"
+  }
+ ]
+}

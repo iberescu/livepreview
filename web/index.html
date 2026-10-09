@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup API test</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f7f9; --card: #fff; --ink: #1b1f24; --muted: #6b7280; --line: #e3e6ea; --accent: #2563eb; --ok: #15803d; --err: #b91c1c; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1115; --card: #171a21; --ink: #e6e8ec; --muted: #9aa3b2; --line: #2a2f3a; --accent: #60a5fa; --ok: #4ade80; --err: #f87171; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+  header { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 18px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  header label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  select, input[type=text], button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  button { cursor: pointer; } button.primary { background: var(--accent); color: #fff; border-color: transparent; } button:disabled { opacity: .5; cursor: wait; }
+  main { padding: 18px; display: grid; gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h2 { margin: 0 0 2px; font-size: 16px; } .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 10px; }
+  .row label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  .body { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 16px; }
+  @media (max-width: 900px) { .body { grid-template-columns: 1fr; } }
+  .examples { display: grid; gap: 10px; }
+  figure { margin: 0; display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  figure img { width: 96px; height: 72px; object-fit: contain; background: repeating-conic-gradient(#8884 0 25%, transparent 0 50%) 0 0/16px 16px; border-radius: 4px; }
+  figcaption { font-size: 13px; } figcaption small { display: block; color: var(--muted); }
+  .result { min-height: 120px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 8px; align-content: start; }
+  .result img { max-width: 100%; height: auto; border-radius: 6px; background: repeating-conic-gradient(#8884 0 25%, transparent 0 50%) 0 0/16px 16px; }
+  .stats { font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; } .stats b { color: var(--ink); }
+  .err { color: var(--err); white-space: pre-wrap; } .ok { color: var(--ok); }
+  code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+  details { font-size: 12.5px; color: var(--muted); } details pre { white-space: pre-wrap; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mockup API test</h1>
+  <label>scale <select id="scale"><option value="100">100%</option><option value="50" selected>50%</option><option value="25">25%</option></select></label>
+  <label>format <select id="format"><option>webp</option><option>jpeg</option><option>png</option></select></label>
+  <label>fit <select id="fit"><option>contain</option><option>cover</option><option>fill</option></select></label>
+  <label><input type="checkbox" id="instances" checked> replace instances</label>
+  <button id="all" class="primary">Render first example of every template</button>
+  <span id="status" class="meta"></span>
+</header>
+<main id="templates"></main>
+
+<template id="card">
+  <section class="card">
+    <h2></h2>
+    <div class="meta"></div>
+    <div class="row">
+      <label>smart object <select class="so"></select></label>
+      <label>design background <input type="text" class="bg" size="8" placeholder="#ffffff"></label>
+      <span class="so-info meta"></span>
+    </div>
+    <div class="body">
+      <div class="examples"></div>
+      <div class="result"><span class="meta">Pick an example (or upload an image) and press Render.</span></div>
+    </div>
+  </section>
+</template>
+
+<script>
+// The page is served by the API itself; opened as a file, it talks to localhost:8080.
+const API = location.protocol.startsWith('http') ? '' : 'http://localhost:8080';
+const $ = (sel, el = document) => el.querySelector(sel);
+const status = (msg, cls = '') => { const s = $('#status'); s.textContent = msg; s.className = 'meta ' + cls; };
+
+// Which smart object a template is "about": names that say so, then the first visible one.
+function defaultSmartObject(list) {
+  const score = s => {
+    const n = s.name.toLowerCase(); let v = 0;
+    for (const [word, w] of [['design', 10], ['artwork', 10], ['replace', 8], ['place', 6], ['logo', 4], ['print', 4]]) if (n.includes(word)) v += w;
+    if (n.includes('copy')) v -= 5;
+    if (!s.visible) v -= 3;
+    // An opacity-0 layer is only worth replacing through its linked instances.
+    if (s.opacity === 0 && !s.instances) v -= 20;
+    return v;
+  };
+  return [...list].sort((a, b) => score(b) - score(a))[0];
+}
+
+function fmtMs(ms) { return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`; }
+function fmtBytes(n) { return n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`; }
+
+async function render(card, tpl, imageBlob, imageName) {
+  const result = $('.result', card);
+  const buttons = card.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  result.innerHTML = `<span class="meta">Rendering ${imageName}…</span>`;
+  const so = tpl.smart_objects.find(s => String(s.layer_id) === $('.so', card).value) || tpl.smart_objects[0];
+  const fd = new FormData();
+  fd.append('template', tpl.id);
+  if (so.layer_id != null) fd.append('layer_id', so.layer_id); else fd.append('smart_object', so.name);
+  fd.append('scale', $('#scale').value);
+  fd.append('format', $('#format').value);
+  fd.append('fit', $('#fit').value);
+  fd.append('instances', $('#instances').checked ? 'true' : 'false');
+  const bg = $('.bg', card).value.trim();
+  if (bg) fd.append('design_background', bg);
+  fd.append('image', imageBlob, imageName);
+  const t0 = performance.now();
+  try {
+    const res = await fetch(API + '/render', { method: 'POST', body: fd });
+    const wall = performance.now() - t0;
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try { msg += '\n' + (await res.json()).error; } catch (_) { }
+      result.innerHTML = `<div class="err"></div>`; $('.err', result).textContent = msg;
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const timing = res.headers.get('server-timing') || '';
+    const stages = timing.split(',').map(s => s.trim()).filter(Boolean).map(s => { const [k, v] = s.split(';dur='); return `${k} ${v}`; });
+    result.innerHTML = `
+      <a href="${url}" target="_blank" title="open full size"><img></a>
+      <div class="stats">
+        <span>output <b>${res.headers.get('x-image-width')}×${res.headers.get('x-image-height')}</b></span>
+        <span>rendered at <b>${Math.round(parseFloat(res.headers.get('x-render-scale') || '1') * 100)}%</b> of the document</span>
+        <span>layers replaced <b>${res.headers.get('x-replaced-layers')}</b></span>
+        <span>${blob.type} <b>${fmtBytes(blob.size)}</b></span>
+        <span>wall time <b>${fmtMs(wall)}</b></span>
+      </div>
+      <details><summary>server timing: ${stages.join(' · ')}</summary><pre>${timing}</pre></details>`;
+    $('img', result).src = url;
+  } catch (e) {
+    result.innerHTML = `<div class="err">${e}</div>`;
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+
+async function exampleBlob(file) {
+  const r = await fetch(API + '/examples/' + file);
+  if (!r.ok) throw new Error(`example ${file}: ${r.status}`);
+  return r.blob();
+}
+
+function buildCard(tpl, examples) {
+  const card = $('#card').content.firstElementChild.cloneNode(true);
+  $('h2', card).textContent = tpl.id;
+  $('.meta', card).textContent = `${tpl.width}×${tpl.height} ${tpl.mode} ${tpl.bits}-bit · ${tpl.layers} layers · ${tpl.smart_objects.length} smart object(s)`;
+  const sel = $('.so', card);
+  const def = defaultSmartObject(tpl.smart_objects);
+  for (const s of tpl.smart_objects) {
+    const o = document.createElement('option');
+    const note = s.opacity === 0 ? (s.instances ? ', handle for its instances' : ', opacity 0: invisible') : !s.visible ? ', hidden' : '';
+    o.value = s.layer_id; o.textContent = `${s.name} (id ${s.layer_id}, ${s.width}×${s.height}${note})`;
+    if (s === def) o.selected = true;
+    sel.appendChild(o);
+  }
+  const describe = () => {
+    const s = tpl.smart_objects.find(x => String(x.layer_id) === sel.value);
+    if (!s) return;
+    const bits = [`placeholder coverage ${Math.round(s.placeholder_coverage * 100)}%` + (s.placeholder_coverage >= 0.99 ? ' (full surface: use opaque images or a design background)' : '')];
+    if (s.instances) bits.push(`${s.instances} instance(s) share the contents`);
+    if (s.filters) bits.push(`filters: ${s.filters.join(' → ')}`);
+    if (s.warp) bits.push(`warp: ${s.warp.style}` + (s.warp.fit ? ` (fit ${s.warp.fit.before.toFixed(1)} → ${s.warp.fit.after.toFixed(1)}/255)` : ''));
+    $('.so-info', card).textContent = bits.join(' · ');
+    $('.bg', card).value = s.placeholder_coverage >= 0.99 ? '#ffffff' : '';
+  };
+  sel.addEventListener('change', describe);
+  describe();
+
+  const ex = $('.examples', card);
+  for (const e of examples) {
+    const fig = document.createElement('figure');
+    fig.innerHTML = `<img alt=""><figcaption><small></small></figcaption><button>Render</button>`;
+    $('img', fig).src = API + '/examples/' + e.file;
+    $('figcaption', fig).firstChild.textContent = '';
+    $('figcaption', fig).insertAdjacentText('afterbegin', e.label);
+    $('small', fig).textContent = e.file;
+    $('button', fig).addEventListener('click', async () => {
+      try { await render(card, tpl, await exampleBlob(e.file), e.file.split('/').pop()); }
+      catch (err) { $('.result', card).innerHTML = `<div class="err">${err}</div>`; }
+    });
+    ex.appendChild(fig);
+  }
+  const up = document.createElement('figure');
+  up.innerHTML = `<span class="meta" style="text-align:center">your<br>image</span><figcaption><input type="file" accept="image/*,.psd,.psb,.svg,.heic"><small>any image PhotoCraft opens</small></figcaption><button>Render</button>`;
+  $('button', up).addEventListener('click', () => {
+    const f = $('input', up).files[0];
+    if (!f) { $('.result', card).innerHTML = `<div class="err">choose a file first</div>`; return; }
+    render(card, tpl, f, f.name);
+  });
+  ex.appendChild(up);
+  card.renderFirst = () => examples.length ? $('figure button', card).click() : null;
+  return card;
+}
+
+async function main() {
+  status('loading templates…');
+  try {
+    const [templates, manifest] = await Promise.all([
+      fetch(API + '/templates').then(r => r.json()),
+      fetch(API + '/examples/manifest.json').then(r => r.ok ? r.json() : {}),
+    ]);
+    const root = $('#templates');
+    for (const tpl of templates) {
+      if (tpl.error) {
+        const c = document.createElement('section'); c.className = 'card';
+        c.innerHTML = `<h2></h2><div class="err"></div>`; $('h2', c).textContent = tpl.id; $('.err', c).textContent = tpl.error;
+        root.appendChild(c); continue;
+      }
+      root.appendChild(buildCard(tpl, manifest[tpl.id] || []));
+    }
+    const missing = templates.filter(t => !t.error && !(manifest[t.id] || []).length).map(t => t.id);
+    status(`${templates.length} template(s) loaded` + (missing.length ? ` · no examples for: ${missing.join(', ')} (run examples/generate.py)` : ''), 'ok');
+  } catch (e) {
+    status(`can't reach the API at ${API || location.origin}: ${e}`, 'err');
+  }
+}
+
+$('#all').addEventListener('click', async () => {
+  const cards = [...document.querySelectorAll('#templates .card')].filter(c => c.renderFirst);
+  for (const c of cards) {
+    // Each card's Render button handles its own result; run them one after another.
+    const btn = $('figure button', c);
+    btn.click();
+    await new Promise(r => { const i = setInterval(() => { if (!btn.disabled) { clearInterval(i); r(); } }, 50); });
+  }
+});
+
+main();
+</script>
+</body>
+</html>

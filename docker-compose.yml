@@ -1,0 +1,23 @@
+services:
+  mockup:
+    build: .
+    image: psd-mockup-service:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      # Drop PSD/PSB templates here (subfolders allowed). Changed files are reloaded on next use.
+      - ${PSD_HOST_DIR:-./psds}:/data/psds:ro
+      # Fitted warp meshes (see README): computed once per template, kept here.
+      - ./cache:/data/cache
+      # Example designs for the test page at http://localhost:8080/ (examples/generate.py).
+      - ./examples:/data/examples:ro
+    environment:
+      RUST_LOG: info
+      # Renders running at once (each render is itself multithreaded). Default: cores/4, 2..8.
+      # MAX_CONCURRENT_RENDERS: "4"
+      MAX_UPLOAD_MB: "50"
+      # Parse every template at startup so the first request is fast.
+      PRELOAD: "true"
+      CACHE_DIR: /data/cache
+      EXAMPLES_DIR: /data/examples
+    restart: unless-stopped

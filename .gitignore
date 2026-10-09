@@ -1,0 +1,17 @@
+# Rust build output (the Docker build keeps its own cache)
+target/
+
+# Fitted warp meshes: keyed by PSD path and mtime, rebuilt automatically
+cache/
+
+# Machine-specific: where the PSD templates live (see .env.example)
+.env
+
+# Render outputs from manual testing
+test/*-out*
+test/r-*
+test/s-*
+test/n-*
+test/e-*
+test/p-*
+test/f-*
