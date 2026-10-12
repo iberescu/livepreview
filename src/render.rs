@@ -413,7 +413,7 @@ fn requested_size(doc_w: u32, doc_h: u32, o: &Options) -> (u32, u32) {
 
 /// The pyramid level (0 = full size, n = 1/2ⁿ) to composite at for an `ow`×`oh` output: the
 /// smallest copy of the document that is still at least as large as the output.
-fn level_for(doc_w: u32, doc_h: u32, ow: u32, oh: u32) -> u8 {
+pub(crate) fn level_for(doc_w: u32, doc_h: u32, ow: u32, oh: u32) -> u8 {
     let mut level = 0u8;
     while level < crate::scale::MAX_LEVEL {
         let f = 0.5f64.powi(i32::from(level) + 1);
@@ -429,8 +429,9 @@ fn level_for(doc_w: u32, doc_h: u32, ow: u32, oh: u32) -> u8 {
 /// Renders the template unchanged (PhotoCraft's composite), for comparison with Photoshop's.
 pub fn render_unchanged(tpl: &Template, o: &Options) -> Result<Output, ApiError> {
     let t = Instant::now();
-    let (ow, oh) = requested_size(tpl.doc.size.width, tpl.doc.size.height, o);
-    let level = level_for(tpl.doc.size.width, tpl.doc.size.height, ow, oh);
+    let (ow, oh) = requested_size(tpl.size.width, tpl.size.height, o);
+    // never finer than what the template keeps (lean stores): resampled up to the output below
+    let level = level_for(tpl.size.width, tpl.size.height, ow, oh).max(tpl.base_level);
     let doc = tpl.document_at(level);
     let matte = o.background.or((o.format == Format::Jpeg).then_some([1.0, 1.0, 1.0]));
     let full = composite(&doc, tpl.to_srgb.as_ref(), matte);
@@ -487,9 +488,10 @@ pub fn render(tpl: &Template, target: &Target, upload: &[u8], upload_name: &str,
     lap("decode", &mut t);
 
     // Composite on the smallest copy of the document that still covers the output.
-    let (dw, dh) = (tpl.doc.size.width, tpl.doc.size.height);
+    let (dw, dh) = (tpl.size.width, tpl.size.height);
     let (ow, oh) = requested_size(dw, dh, o);
-    let level = level_for(dw, dh, ow, oh);
+    // never finer than what the template keeps (lean stores): resampled up to the output below
+    let level = level_for(dw, dh, ow, oh).max(tpl.base_level);
     let base = tpl.document_at(level);
     let doc_scale = 0.5f64.powi(i32::from(level));
     let fmt = base.pixel_format();

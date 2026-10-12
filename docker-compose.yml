@@ -18,6 +18,10 @@ services:
       MAX_UPLOAD_MB: "50"
       # Parse every template at startup so the first request is fast.
       PRELOAD: "true"
+      # Web-size outputs only? Keep each template at the copy that covers this size — a fraction
+      # of the memory (README › Memory) — and parse one PSD at a time.
+      # MAX_OUTPUT_SIZE: "1000"
+      # LOAD_CONCURRENCY: "1"
       CACHE_DIR: /data/cache
       EXAMPLES_DIR: /data/examples
     restart: unless-stopped

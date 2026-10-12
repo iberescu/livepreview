@@ -186,8 +186,36 @@ of a 1600×1200 template at 16 concurrent clients took 3.6 s.
 | `MAX_CONCURRENT_RENDERS` | cores/4, clamped to 2–8 | |
 | `MAX_UPLOAD_MB` | `50` | |
 | `PRELOAD` | `true` | parse all templates at startup (in the background) |
+| `MAX_OUTPUT_SIZE` | `0` (off) | largest output, px per side, clients will ask for: templates keep only the downscaled copy covering it (see [Memory](#memory)) |
+| `LOAD_CONCURRENCY` | no limit | how many PSDs parse at once |
 | `RAYON_NUM_THREADS` | all cores | threads for compositing |
 | `RUST_LOG` | `info` | `debug` logs each warp fit pass |
+
+## Memory
+
+A parsed template keeps every layer's pixels decoded (uncompressed, in tiles), and by default
+at full resolution, with the raw PSD data the engine keeps for re-saving (layer blocks, smart
+object contents, image resources). A big mockup set adds up: seven production templates
+(1.5–4.5k px, 21–285 MB files) take ~3.4 GB this way, and parsing one briefly needs another
+~1.5 GB.
+
+A service that only ever renders web-size outputs doesn't need most of that: a request is
+composited on the smallest copy of the document that still covers its output (see above), so
+the full-resolution document of a 4500-pixel template is never touched by a 1000-pixel render.
+`MAX_OUTPUT_SIZE` makes the store keep just that copy: after loading (warp fitting still runs on
+the full document), a template is downscaled to the deepest level that covers an output of
+`MAX_OUTPUT_SIZE` × `MAX_OUTPUT_SIZE`, the re-save-only data is dropped (the compositor never
+reads it; sizes, instances and filters were read from it at load), and freed memory is handed
+back to the system after every load and render. Renders up to that size are unchanged — the
+seven templates above rendered bit-identical outputs at width 1000 — and larger ones are
+composited at the kept level and resampled up. `GET /templates` still reports the PSD's own
+size; `check` always loads full documents.
+
+Measured on those seven templates (2 vCPU, `MAX_OUTPUT_SIZE=1000`, `LOAD_CONCURRENCY=1`): resident
+memory ~3.4 GB → ~0.6 GB after loading, levelling off at ~0.8 GB over hundreds of renders
+(allocator fragmentation); no slow first render (there is no copy left to build); every render
+0.3–1.5 s; loading all seven takes ~65 s and peaks at ~2 GB (one file's parse on top of the
+templates already loaded).
 
 ## How a render works
 

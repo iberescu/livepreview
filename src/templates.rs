@@ -7,16 +7,23 @@
 //! Loading also prepares each smart object for replacement: its Photoshop-only smart filters
 //! are parsed (Displace), and a preset warp (Arc, Arc Lower, Flag…) is replaced by the mesh
 //! recovered from Photoshop's own render of the layer (`meshfit`), cached on disk.
+//!
+//! Memory: a parsed document holds every layer's pixels decoded, plus the raw PSD data kept for
+//! re-saving. With [`StoreOptions::max_output`] set (`MAX_OUTPUT_SIZE`), a template keeps only
+//! the downscaled copy that still covers the largest output it will be asked for — the copy
+//! renders of that size composite on anyway — and drops the full-resolution document and the
+//! re-save-only data; `LOAD_CONCURRENCY` bounds how many files parse at once (each parse
+//! briefly needs several times its file size).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
 use photocraft_color::ColorMode;
-use photocraft_doc::{Document, LayerContent, SmartSource};
+use photocraft_doc::{Document, Layer, LayerContent, Size, SmartSource};
 use photocraft_engine::smart_cmds;
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
 use rayon::prelude::*;
@@ -88,8 +95,14 @@ pub struct Template {
     pub id: String,
     pub path: PathBuf,
     pub modified: Option<SystemTime>,
+    /// The document as kept: full size, or (lean stores) the copy at `base_level`.
     pub doc: Arc<Document>,
-    /// Downscaled copies of `doc` (level n = 1/2ⁿ), built on first use (`scale.rs`).
+    /// The PSD's own pixel size (what levels and output sizes are computed from).
+    pub size: Size,
+    /// The level `doc` is at (0 = full size, n = 1/2ⁿ): requests that need a finer level are
+    /// composited at this one and resampled up.
+    pub base_level: u8,
+    /// Downscaled copies of `doc` (level n = 1/2ⁿ of the PSD), built on first use (`scale.rs`).
     scaled: RwLock<HashMap<u8, Arc<Document>>>,
     scale_lock: Mutex<()>,
     pub smart_objects: Vec<SmartInfo>,
@@ -130,7 +143,7 @@ impl Template {
     /// The document at 1/2^`level` of its size (level 0: the document itself).
     pub fn document_at(&self, level: u8) -> Arc<Document> {
         let level = level.min(crate::scale::MAX_LEVEL);
-        if level == 0 {
+        if level <= self.base_level {
             return self.doc.clone();
         }
         if let Some(d) = self.scaled.read().unwrap_or_else(|e| e.into_inner()).get(&level) {
@@ -141,7 +154,7 @@ impl Template {
             return d.clone();
         }
         let t = Instant::now();
-        let d = Arc::new(crate::scale::scale_document(&self.doc, level));
+        let d = Arc::new(crate::scale::scale_document(&self.doc, level - self.base_level));
         tracing::info!(template = %self.id, level, width = d.size.width, height = d.size.height, ms = t.elapsed().as_millis() as u64, "scaled copy built");
         self.scaled.write().unwrap_or_else(|e| e.into_inner()).insert(level, d.clone());
         d
@@ -151,8 +164,8 @@ impl Template {
         TemplateSummary {
             id: self.id.clone(),
             file: self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            width: self.doc.size.width,
-            height: self.doc.size.height,
+            width: self.size.width,
+            height: self.size.height,
             mode: format!("{:?}", self.doc.mode),
             bits: self.doc.pixel_format().sample.bytes() as u32 * 8,
             layers: self.doc.layer_count(),
@@ -427,7 +440,56 @@ fn fit_warps(id: &str, doc: &mut Document, smart_objects: &mut [SmartInfo], file
     }
 }
 
-fn load(id: &str, path: &Path) -> Result<Template, String> {
+/// The deepest level whose copy still covers an output capped at `max` px per side — the level
+/// [`crate::render`] composites such a request on.
+fn keep_level(size: Size, max: u32) -> u8 {
+    let (w, h) = (size.width.max(1), size.height.max(1));
+    let k = (f64::from(max) / f64::from(w)).min(f64::from(max) / f64::from(h)).min(1.0);
+    let (ow, oh) = (((f64::from(w) * k).round() as u32).max(1), ((f64::from(h) * k).round() as u32).max(1));
+    crate::render::level_for(w, h, ow, oh)
+}
+
+/// Drops what only re-saving the PSD needs — the compositor never reads it: each layer's raw
+/// additional-info blocks, the placed-layer data and embedded contents of smart objects (a
+/// replacement brings its own; the others render from Photoshop's pixels, kept in their
+/// caches), and the document's raw resources and global blocks (linked files live there).
+/// Instance grouping, sizes and filters were read from these at load and are kept in
+/// [`SmartInfo`].
+fn strip_resave_data(doc: &mut Document) {
+    fn layers(ls: &mut [Layer]) {
+        for l in ls {
+            l.psd_blocks = Vec::new();
+            match &mut l.content {
+                LayerContent::Smart(sm) => {
+                    sm.psd_raw = None;
+                    if let SmartSource::Embedded { bytes, .. } = &mut sm.source {
+                        *bytes = Arc::new(Vec::new());
+                    }
+                }
+                LayerContent::Group(g) => layers(&mut g.children),
+                _ => {}
+            }
+        }
+    }
+    layers(&mut doc.layers);
+    doc.metadata.psd_resources = Vec::new();
+    doc.metadata.psd_global_blocks = Vec::new();
+    doc.metadata.exif = None;
+    doc.metadata.xmp = None;
+}
+
+/// Hands freed memory back to the system — after a load (the full-resolution document, the
+/// file, decode buffers) and, in lean stores, after each render: glibc keeps freed heap pages
+/// in its per-thread arenas otherwise, so the process would stay at its peak.
+pub fn release_freed_memory() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: malloc_trim only returns unused pages of the allocator's own heaps.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+fn load(id: &str, path: &Path, opts: &StoreOptions) -> Result<Template, String> {
     let t0 = Instant::now();
     let meta = std::fs::metadata(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
     let modified = meta.modified().ok();
@@ -483,11 +545,24 @@ fn load(id: &str, path: &Path) -> Result<Template, String> {
         _ => (None, None),
     };
 
+    // Lean: keep only what renders of at most `max_output` px composite on.
+    let size = doc.size;
+    let base_level = opts.max_output.map_or(0, |m| keep_level(size, m));
+    let doc = if opts.max_output.is_some() {
+        let mut kept = if base_level > 0 { crate::scale::scale_document(&doc, base_level) } else { doc };
+        strip_resave_data(&mut kept);
+        kept
+    } else {
+        doc
+    };
+
     Ok(Template {
         id: id.to_string(),
         path: path.to_path_buf(),
         modified,
         doc: Arc::new(doc),
+        size,
+        base_level,
         scaled: RwLock::new(HashMap::new()),
         scale_lock: Mutex::new(()),
         smart_objects,
@@ -498,17 +573,66 @@ fn load(id: &str, path: &Path) -> Result<Template, String> {
     })
 }
 
+/// How templates are kept in memory (see the module docs).
+#[derive(Clone, Debug, Default)]
+pub struct StoreOptions {
+    /// Largest output (px per side) renders will ask for: keep only the copy that covers it.
+    /// `None` keeps every template at full resolution with its re-save data (`check` needs that).
+    pub max_output: Option<u32>,
+    /// How many files may parse at once (`None` = no limit).
+    pub load_concurrency: Option<usize>,
+}
+
+/// A counting semaphore: at most `max` loads at once.
+struct Gate {
+    max: usize,
+    busy: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Gate {
+    fn enter(&self) -> GatePass<'_> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        while *busy >= self.max {
+            busy = self.freed.wait(busy).unwrap_or_else(|e| e.into_inner());
+        }
+        *busy += 1;
+        GatePass(self)
+    }
+}
+
+struct GatePass<'a>(&'a Gate);
+
+impl Drop for GatePass<'_> {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
 pub struct Store {
     dir: PathBuf,
+    opts: StoreOptions,
     loaded: RwLock<HashMap<String, Arc<Template>>>,
     /// One lock per template id, so concurrent first requests don't parse the same file twice
-    /// while different files still load in parallel.
+    /// while different files still load in parallel (up to `load_gate`).
     load_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    load_gate: Option<Gate>,
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, loaded: RwLock::new(HashMap::new()), load_locks: Mutex::new(HashMap::new()) }
+        Self::with_options(dir, StoreOptions::default())
+    }
+
+    /// Templates are kept downscaled (`MAX_OUTPUT_SIZE`): memory matters more than a few ms.
+    pub fn lean(&self) -> bool {
+        self.opts.max_output.is_some()
+    }
+
+    pub fn with_options(dir: PathBuf, opts: StoreOptions) -> Self {
+        let load_gate = opts.load_concurrency.map(|max| Gate { max: max.max(1), busy: Mutex::new(0), freed: Condvar::new() });
+        Self { dir, opts, loaded: RwLock::new(HashMap::new()), load_locks: Mutex::new(HashMap::new()), load_gate }
     }
 
     /// Every PSD/PSB under the folder, by id.
@@ -548,8 +672,14 @@ impl Store {
         if let Some(t) = self.cached_fresh(id) {
             return Ok(t);
         }
-        let t = Arc::new(load(id, path).map_err(ApiError::unprocessable)?);
-        tracing::info!(template = id, ms = t.load_ms, smart_objects = t.smart_objects.len(), "template loaded");
+        let loaded = {
+            let _pass = self.load_gate.as_ref().map(Gate::enter);
+            let t = load(id, path, &self.opts);
+            release_freed_memory();
+            t
+        };
+        let t = Arc::new(loaded.map_err(ApiError::unprocessable)?);
+        tracing::info!(template = id, ms = t.load_ms, smart_objects = t.smart_objects.len(), level = t.base_level, width = t.doc.size.width, height = t.doc.size.height, "template loaded");
         self.loaded.write().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), t.clone());
         Ok(t)
     }
@@ -569,7 +699,7 @@ impl Store {
         self.load_into_cache(id, &path)
     }
 
-    /// Loads (in parallel) every template, dropping ones whose file is gone.
+    /// Loads (in parallel, up to the load gate) every template, dropping ones whose file is gone.
     pub fn list(&self) -> Vec<ListEntry> {
         let files = self.scan();
         {

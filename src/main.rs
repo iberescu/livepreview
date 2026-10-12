@@ -64,7 +64,16 @@ async fn serve() {
     let max_upload_mb: usize = env_or("MAX_UPLOAD_MB", 50);
     let preload: bool = env_or("PRELOAD", true);
 
-    let store = Arc::new(Store::new(dir.clone()));
+    // MAX_OUTPUT_SIZE: largest output (px per side) clients ask for — templates then keep only
+    // the copy that covers it (much less memory; larger outputs are resampled up).
+    // LOAD_CONCURRENCY: files parsed at once (each parse briefly needs several times its size).
+    let max_output: u32 = env_or("MAX_OUTPUT_SIZE", 0);
+    let load_concurrency: usize = env_or("LOAD_CONCURRENCY", 0);
+    let opts = templates::StoreOptions {
+        max_output: (max_output > 0).then_some(max_output),
+        load_concurrency: (load_concurrency > 0).then_some(load_concurrency),
+    };
+    let store = Arc::new(Store::with_options(dir.clone(), opts));
     let state = Arc::new(AppState { store: store.clone(), renders: Arc::new(Semaphore::new(max_renders)) });
     // The test page (web/index.html, compiled in) and the example designs it uses. The API is
     // open to any origin, with the custom headers readable, so the page also works from a file
@@ -91,7 +100,7 @@ async fn serve() {
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!(%addr, cores, max_renders, max_upload_mb, "listening");
+    tracing::info!(%addr, cores, max_renders, max_upload_mb, max_output, load_concurrency, "listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     if preload {
         // Parse every template (and fit its warps) in the background: the service answers at
@@ -188,8 +197,11 @@ async fn render_handler(State(st): State<Shared>, Query(query): Query<HashMap<St
     let (tpl_id, out) = blocking(move || {
         let _permit = permit;
         let tpl = store.get(&template)?;
-        let out = render::render(&tpl, &target, &image, &upload_name, &opts)?;
-        Ok((tpl.id.clone(), out))
+        let out = render::render(&tpl, &target, &image, &upload_name, &opts);
+        if store.lean() {
+            templates::release_freed_memory();
+        }
+        Ok((tpl.id.clone(), out?))
     })
     .await?;
 
@@ -215,7 +227,11 @@ async fn preview_handler(State(st): State<Shared>, Query(params): Query<HashMap<
     let out = blocking(move || {
         let _permit = permit;
         let tpl = store.get(&template)?;
-        if photoshop { render::photoshop_composite(&tpl, &opts) } else { render::render_unchanged(&tpl, &opts) }
+        let out = if photoshop { render::photoshop_composite(&tpl, &opts) } else { render::render_unchanged(&tpl, &opts) };
+        if store.lean() {
+            templates::release_freed_memory();
+        }
+        out
     })
     .await?;
     let timing = out.timings.iter().map(|(k, v)| format!("{k};dur={v}")).collect::<Vec<_>>().join(", ");
