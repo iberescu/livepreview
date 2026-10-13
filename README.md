@@ -176,6 +176,12 @@ Renders run on blocking worker threads, each itself parallel; `MAX_CONCURRENT_RE
 many run at once (extra requests queue; the wait shows as `queue` in `server-timing`). 96 renders
 of a 1600×1200 template at 16 concurrent clients took 3.6 s.
 
+A request for a template that is still loading waits for it (`load` in `server-timing`) before it
+takes a render slot, and the startup preload parses on threads of its own, not on rayon's pool —
+so templates already loaded keep rendering while the rest load. With the seven templates of
+[Memory](#memory) loading (~60 s on 1.5 CPUs), a render of one already loaded took ~1.8 s
+(0.6 s afterwards); before, it waited for most of the preload (~35 s).
+
 ## Configuration (environment)
 
 | var | default | |

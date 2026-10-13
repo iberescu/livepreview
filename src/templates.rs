@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +27,6 @@ use photocraft_color::ColorMode;
 use photocraft_doc::{Document, Layer, LayerContent, Size, SmartSource};
 use photocraft_engine::smart_cmds;
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::displace::Displace;
@@ -700,18 +700,37 @@ impl Store {
     }
 
     /// Loads (in parallel, up to the load gate) every template, dropping ones whose file is gone.
+    ///
+    /// The loads run on threads of their own, not on rayon's pool: a parse is one long serial
+    /// job, and a pool thread busy with it (or parked at the load gate) is one renders can't
+    /// use, so renders of templates already loaded would wait for the whole preload.
     pub fn list(&self) -> Vec<ListEntry> {
         let files = self.scan();
         {
             let mut loaded = self.loaded.write().unwrap_or_else(|e| e.into_inner());
             loaded.retain(|id, _| files.iter().any(|(i, _)| i == id));
         }
-        files
-            .par_iter()
-            .map(|(id, _)| match self.get(id) {
-                Ok(t) => ListEntry::Ok(t.summary()),
-                Err(e) => ListEntry::Failed { id: id.clone(), error: e.message },
-            })
-            .collect()
+        let threads = self.load_gate.as_ref().map_or_else(rayon::current_num_threads, |g| g.max).clamp(1, files.len().max(1));
+        let next = AtomicUsize::new(0);
+        let mut entries: Vec<(usize, ListEntry)> = std::thread::scope(|s| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some((id, _)) = files.get(i) else { break done };
+                            done.push((i, match self.get(id) {
+                                Ok(t) => ListEntry::Ok(t.summary()),
+                                Err(e) => ListEntry::Failed { id: id.clone(), error: e.message },
+                            }));
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
+        });
+        entries.sort_by_key(|(i, _)| *i);
+        entries.into_iter().map(|(_, e)| e).collect()
     }
 }

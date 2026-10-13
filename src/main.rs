@@ -104,7 +104,8 @@ async fn serve() {
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     if preload {
         // Parse every template (and fit its warps) in the background: the service answers at
-        // once, and a request for a template still loading simply waits for that one.
+        // once, a request for a template still loading simply waits for that one, and renders
+        // of the templates already loaded go ahead meanwhile.
         let s = store.clone();
         tokio::spawn(async move {
             let t0 = Instant::now();
@@ -191,23 +192,30 @@ async fn render_handler(State(st): State<Shared>, Query(query): Query<HashMap<St
     let opts = render::Options::from_params(&params)?;
     let upload_name = param("filename").unwrap_or_else(|| "upload".into());
 
-    let permit = st.renders.clone().acquire_owned().await.map_err(|_| ApiError::internal("shutting down"))?;
-    let queued_ms = t0.elapsed().as_millis() as u64;
+    // The template before a render slot: waiting for one still loading doesn't hold a slot
+    // that renders of loaded templates could use.
+    let t = Instant::now();
     let store = st.store.clone();
-    let (tpl_id, out) = blocking(move || {
+    let tpl = blocking(move || store.get(&template)).await?;
+    let load_ms = t.elapsed().as_millis() as u64;
+    let t = Instant::now();
+    let permit = st.renders.clone().acquire_owned().await.map_err(|_| ApiError::internal("shutting down"))?;
+    let queued_ms = t.elapsed().as_millis() as u64;
+    let tpl_id = tpl.id.clone();
+    let store = st.store.clone();
+    let out = blocking(move || {
         let _permit = permit;
-        let tpl = store.get(&template)?;
         let out = render::render(&tpl, &target, &image, &upload_name, &opts);
         if store.lean() {
             templates::release_freed_memory();
         }
-        Ok((tpl.id.clone(), out?))
+        out
     })
     .await?;
 
     let total = t0.elapsed().as_millis() as u64;
-    let timing = out.timings.iter().map(|(k, v)| format!("{k};dur={v}")).chain([format!("queue;dur={queued_ms}"), format!("total;dur={total}")]).collect::<Vec<_>>().join(", ");
-    tracing::info!(template = tpl_id, replaced = out.replaced, width = out.width, height = out.height, bytes = out.bytes.len(), queued_ms, total_ms = total, "{timing}");
+    let timing = out.timings.iter().map(|(k, v)| format!("{k};dur={v}")).chain([format!("load;dur={load_ms}"), format!("queue;dur={queued_ms}"), format!("total;dur={total}")]).collect::<Vec<_>>().join(", ");
+    tracing::info!(template = tpl_id, replaced = out.replaced, width = out.width, height = out.height, bytes = out.bytes.len(), load_ms, queued_ms, total_ms = total, "{timing}");
 
     Ok(image_response(out, &timing))
 }
@@ -222,11 +230,12 @@ async fn preview_handler(State(st): State<Shared>, Query(params): Query<HashMap<
         Some(s) => return Err(ApiError::bad_request(format!("unknown source \"{s}\" (use photoshop or photocraft)"))),
     };
     let opts = render::Options::from_params(&params)?;
+    let store = st.store.clone();
+    let tpl = blocking(move || store.get(&template)).await?;
     let permit = st.renders.clone().acquire_owned().await.map_err(|_| ApiError::internal("shutting down"))?;
     let store = st.store.clone();
     let out = blocking(move || {
         let _permit = permit;
-        let tpl = store.get(&template)?;
         let out = if photoshop { render::photoshop_composite(&tpl, &opts) } else { render::render_unchanged(&tpl, &opts) };
         if store.lean() {
             templates::release_freed_memory();
